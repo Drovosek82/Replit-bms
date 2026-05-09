@@ -23,12 +23,13 @@ const screenWidth = Dimensions.get("window").width;
 
 function NoDataScreen() {
   const { t } = useI18n();
-  const { connectionState, connectionError, demoMode, isLoading } = useBMS();
+  const { connectionState, connectionError, demoMode, isLoading, relayDeviceId } = useBMS();
   const insets = useSafeAreaInsets();
   const webTopInset = Platform.OS === "web" ? 67 : 0;
 
   const isConnecting = connectionState === "connecting" || isLoading;
   const isError = connectionState === "error";
+  const isRelay = !!relayDeviceId;
 
   return (
     <View
@@ -42,10 +43,14 @@ function NoDataScreen() {
     >
       {isConnecting ? (
         <>
-          <ActivityIndicator size="large" color={Colors.dark.tint} />
-          <Text style={noDataStyles.title}>{t("connecting")}</Text>
+          <ActivityIndicator size="large" color={isRelay ? Colors.dark.accent : Colors.dark.tint} />
+          <Text style={noDataStyles.title}>
+            {isRelay ? t("cloudRelay") : t("connecting")}
+          </Text>
           <Text style={noDataStyles.subtitle}>
-            {demoMode ? t("scanning") : "ESP32 WiFi..."}
+            {isRelay
+              ? `${t("relayWaiting")}\nDevice ID: ${relayDeviceId}`
+              : demoMode ? t("scanning") : "ESP32 WiFi..."}
           </Text>
         </>
       ) : isError ? (

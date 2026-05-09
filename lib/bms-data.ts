@@ -39,7 +39,7 @@ export interface HistoryEntry {
 export interface BMSDevice {
   id: string;
   name: string;
-  type: "wifi" | "bluetooth";
+  type: "wifi" | "bluetooth" | "relay";
   group: string;
   connected: boolean;
   lastSeen: number;

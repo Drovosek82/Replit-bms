@@ -20,9 +20,9 @@ import * as Haptics from "expo-haptics";
 import { useBMS, ConnectionState } from "@/lib/bms-context";
 import { useI18n } from "@/lib/i18n";
 import Colors from "@/constants/colors";
-import { getApiUrl } from "@/lib/query-client";
 import { ScanModal } from "@/components/ScanModal";
 import { BLEDevice } from "@/lib/wifi-scanner";
+import * as Clipboard from "expo-clipboard";
 
 function haptic() {
   if (Platform.OS !== "web") {
@@ -179,7 +179,7 @@ function DeviceItem({
           ]}
         >
           <Ionicons
-            name={type === "wifi" ? "wifi" : "bluetooth"}
+            name={type === "relay" ? "cloud-outline" : type === "wifi" ? "wifi" : "bluetooth"}
             size={18}
             color={connected ? Colors.dark.success : Colors.dark.textMuted}
           />
@@ -426,32 +426,119 @@ function WifiSetupModal({
   );
 }
 
-function PushModeInfo() {
+function RelaySection({
+  pushUrl,
+  relayIdInput,
+  setRelayIdInput,
+  onConnect,
+  onCopy,
+  urlCopied,
+  activeRelayId,
+}: {
+  pushUrl: string;
+  relayIdInput: string;
+  setRelayIdInput: (v: string) => void;
+  onConnect: () => void;
+  onCopy: () => void;
+  urlCopied: boolean;
+  activeRelayId: string | null;
+}) {
   const { t } = useI18n();
-  let pushUrl = "";
-  try {
-    pushUrl = `${getApiUrl()}api/bms/push`;
-  } catch {
-    pushUrl = "https://<your-replit-domain>/api/bms/push";
-  }
+
+  const esp32Code = `#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+const char* SERVER = "${pushUrl}";
+const char* DEVICE_ID = "esp01"; // змінити!
+
+void pushBMSData(float v, float i, int soc) {
+  HTTPClient http;
+  http.begin(SERVER);
+  http.addHeader("Content-Type","application/json");
+  String body = "{\\"device_id\\":\\"" + String(DEVICE_ID)
+    + "\\",\\"voltage\\":" + v
+    + ",\\"current\\":" + i
+    + ",\\"soc\\":" + soc + "}";
+  http.POST(body);
+  http.end();
+}`;
 
   return (
-    <View style={styles.pushBox}>
-      <View style={styles.pushBoxHeader}>
-        <Ionicons name="cloud-upload-outline" size={16} color={Colors.dark.accent} />
-        <Text style={styles.pushBoxTitle}>{t("pushMode")}</Text>
+    <View style={styles.relaySection}>
+      <View style={styles.relayHeader}>
+        <View style={styles.relayHeaderIcon}>
+          <Ionicons name="cloud-outline" size={20} color={Colors.dark.accent} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.relayTitle}>{t("cloudRelay")}</Text>
+          <Text style={styles.relayDesc}>{t("cloudRelayDesc")}</Text>
+        </View>
       </View>
-      <Text style={styles.pushBoxDesc}>{t("pushModeDesc")}</Text>
-      <Text style={styles.pushEndpointLabel}>{t("pushEndpoint")}</Text>
-      <View style={styles.pushEndpointBox}>
-        <Text style={styles.pushEndpointText} numberOfLines={2}>
+
+      {activeRelayId && (
+        <View style={styles.relayActiveBadge}>
+          <Ionicons name="checkmark-circle" size={14} color={Colors.dark.success} />
+          <Text style={styles.relayActiveBadgeText}>
+            {t("relayConnected")}: {activeRelayId}
+          </Text>
+        </View>
+      )}
+
+      <Text style={styles.relayLabel}>{t("relayPushUrlLabel")}</Text>
+      <Pressable style={styles.relayUrlBox} onPress={onCopy}>
+        <Text style={styles.relayUrlText} numberOfLines={2} selectable>
           {pushUrl}
         </Text>
+        <View style={styles.relayUrlCopyBtn}>
+          <Ionicons
+            name={urlCopied ? "checkmark" : "copy-outline"}
+            size={15}
+            color={urlCopied ? Colors.dark.success : Colors.dark.accent}
+          />
+          <Text style={[styles.relayUrlCopyText, urlCopied && { color: Colors.dark.success }]}>
+            {urlCopied ? t("urlCopied") : t("copyUrl")}
+          </Text>
+        </View>
+      </Pressable>
+
+      <Text style={styles.relayLabel}>{t("relayDeviceIdLabel")}</Text>
+      <View style={styles.inputWrapper}>
+        <Ionicons
+          name="hardware-chip-outline"
+          size={18}
+          color={Colors.dark.accent}
+          style={styles.inputIcon}
+        />
+        <TextInput
+          style={styles.textInput}
+          value={relayIdInput}
+          onChangeText={setRelayIdInput}
+          placeholder={t("relayDeviceIdHint")}
+          placeholderTextColor={Colors.dark.textMuted}
+          autoCapitalize="none"
+          autoCorrect={false}
+          returnKeyType="done"
+          onSubmitEditing={onConnect}
+        />
       </View>
-      <Text style={styles.pushBodyLabel}>{"POST body (JSON):"}</Text>
+
+      <Pressable
+        style={({ pressed }) => [
+          styles.relayConnectBtn,
+          (!relayIdInput.trim()) && { opacity: 0.45 },
+          pressed && { opacity: 0.7 },
+        ]}
+        onPress={onConnect}
+        disabled={!relayIdInput.trim()}
+      >
+        <Ionicons name="cloud-upload-outline" size={16} color="#000" />
+        <Text style={styles.relayConnectBtnText}>{t("connectViaCloud")}</Text>
+      </Pressable>
+
+      <Text style={styles.relayLabel}>{t("esp32CodeTitle")}</Text>
       <View style={styles.pushEndpointBox}>
-        <Text style={styles.pushCodeText}>
-          {"{\n  \"voltage\": 52.5, \"current\": 3.2,\n  \"soc\": 85, \"cells\": [3.75, ...],\n  \"temp1\": 28, \"device_id\": \"esp01\"\n}"}
+        <Text style={styles.pushCodeText} selectable>
+          {esp32Code}
         </Text>
       </View>
     </View>
@@ -469,14 +556,19 @@ export default function SettingsScreen() {
     connectionError,
     activeDevice,
     connectToWifi,
+    connectToRelay,
     disconnectDevice,
     lastUpdateTime,
+    relayDeviceId,
+    relayPushUrl,
   } = useBMS();
   const { t, lang, setLang } = useI18n();
   const webTopInset = Platform.OS === "web" ? 67 : 0;
 
   const [wifiModalVisible, setWifiModalVisible] = useState(false);
   const [scanModalVisible, setScanModalVisible] = useState(false);
+  const [relayIdInput, setRelayIdInput] = useState(relayDeviceId ?? "");
+  const [urlCopied, setUrlCopied] = useState(false);
 
   const handleLanguageToggle = () => {
     haptic();
@@ -522,6 +614,20 @@ export default function SettingsScreen() {
       Alert.alert(t("connectionError"), `${t("connectionFailed")}: ${url}`);
     });
   }, [activeDevice, t]);
+
+  const handleConnectRelay = useCallback(async () => {
+    if (!relayIdInput.trim()) return;
+    haptic();
+    if (demoMode) await setDemoMode(false);
+    await connectToRelay(relayIdInput.trim());
+  }, [relayIdInput, demoMode, setDemoMode, connectToRelay]);
+
+  const handleCopyUrl = useCallback(async () => {
+    haptic();
+    await Clipboard.setStringAsync(relayPushUrl);
+    setUrlCopied(true);
+    setTimeout(() => setUrlCopied(false), 2000);
+  }, [relayPushUrl]);
 
   const handleDisconnect = () => {
     haptic();
@@ -794,11 +900,17 @@ export default function SettingsScreen() {
           )}
         </View>
 
-        {!demoMode && (
-          <View style={styles.section}>
-            <PushModeInfo />
-          </View>
-        )}
+        <View style={styles.section}>
+          <RelaySection
+            pushUrl={relayPushUrl}
+            relayIdInput={relayIdInput}
+            setRelayIdInput={setRelayIdInput}
+            onConnect={handleConnectRelay}
+            onCopy={handleCopyUrl}
+            urlCopied={urlCopied}
+            activeRelayId={relayDeviceId}
+          />
+        </View>
 
         <View style={styles.section}>
           <SectionTitle label={t("settings")} />
@@ -1311,5 +1423,100 @@ const styles = StyleSheet.create({
     fontWeight: "400" as const,
     marginTop: 1,
     fontVariant: ["tabular-nums"] as any,
+  },
+  relaySection: {
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.dark.accent + "30",
+    padding: 16,
+    gap: 10,
+  },
+  relayHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    marginBottom: 4,
+  },
+  relayHeaderIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 10,
+    backgroundColor: Colors.dark.accent + "18",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  relayTitle: {
+    color: Colors.dark.text,
+    fontSize: 15,
+    fontWeight: "700" as const,
+    marginBottom: 2,
+  },
+  relayDesc: {
+    color: Colors.dark.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+  },
+  relayActiveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: Colors.dark.success + "15",
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  relayActiveBadgeText: {
+    color: Colors.dark.success,
+    fontSize: 12,
+    fontWeight: "600" as const,
+    flex: 1,
+  },
+  relayLabel: {
+    color: Colors.dark.textMuted,
+    fontSize: 11,
+    fontWeight: "600" as const,
+    letterSpacing: 0.3,
+    marginTop: 4,
+    textTransform: "uppercase" as const,
+  },
+  relayUrlBox: {
+    backgroundColor: Colors.dark.background,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: Colors.dark.border,
+    padding: 10,
+    gap: 6,
+  },
+  relayUrlText: {
+    color: Colors.dark.accent,
+    fontSize: 12,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+  },
+  relayUrlCopyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    alignSelf: "flex-end",
+  },
+  relayUrlCopyText: {
+    color: Colors.dark.accent,
+    fontSize: 12,
+    fontWeight: "600" as const,
+  },
+  relayConnectBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    backgroundColor: Colors.dark.accent,
+    borderRadius: 12,
+    paddingVertical: 13,
+    marginTop: 2,
+  },
+  relayConnectBtnText: {
+    color: "#000",
+    fontSize: 14,
+    fontWeight: "700" as const,
   },
 });

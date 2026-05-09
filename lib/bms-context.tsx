@@ -23,6 +23,8 @@ import {
   I18nContext,
 } from "./i18n";
 import { fetchBMSDataFromDevice, normalizeHost } from "./wifi-connection";
+import { fetchBMSDataFromRelay, getRelayPushUrl } from "./relay-connection";
+import { getApiUrl } from "./query-client";
 
 export type ConnectionState = "idle" | "connecting" | "connected" | "error";
 
@@ -47,7 +49,10 @@ interface BMSContextType {
   activeDevice: BMSDevice | null;
   lastUpdateTime: number | null;
   connectToWifi: (host: string, name: string) => Promise<void>;
+  connectToRelay: (deviceId: string) => Promise<void>;
   disconnectDevice: () => void;
+  relayDeviceId: string | null;
+  relayPushUrl: string;
 }
 
 const BMSContext = createContext<BMSContextType | null>(null);
@@ -56,6 +61,7 @@ const POLL_INTERVAL_MS = 2000;
 const RETRY_INTERVAL_MS = 5000;
 const STORAGE_KEY_DEMO = "bms_demo_mode";
 const STORAGE_KEY_DEVICE = "bms_active_device";
+const STORAGE_KEY_RELAY = "bms_relay_device_id";
 
 export function BMSProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<BMSData | null>(null);
@@ -69,11 +75,20 @@ export function BMSProvider({ children }: { children: ReactNode }) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [activeDevice, setActiveDevice] = useState<BMSDevice | null>(null);
   const [lastUpdateTime, setLastUpdateTime] = useState<number | null>(null);
+  const [relayDeviceId, setRelayDeviceId] = useState<string | null>(null);
 
   const prevDataRef = useRef<BMSData | null>(null);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const demoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isMountedRef = useRef(true);
+
+  const relayPushUrl = useMemo(() => {
+    try {
+      return getRelayPushUrl(getApiUrl());
+    } catch {
+      return "https://<your-domain>/api/bms/push";
+    }
+  }, []);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -145,6 +160,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // ── WiFi polling ──────────────────────────────────────────────────────────
   const schedulePoll = useCallback(
     (host: string, delay = POLL_INTERVAL_MS) => {
       stopPolling();
@@ -174,9 +190,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
           if (!isMountedRef.current) return;
           const err = e as Error;
           const msg =
-            err.message === "timeout"
-              ? "timeout"
-              : "connection_failed";
+            err.message === "timeout" ? "timeout" : "connection_failed";
           setConnectionState("error");
           setConnectionError(msg);
           setActiveDevice((prev) =>
@@ -194,6 +208,56 @@ export function BMSProvider({ children }: { children: ReactNode }) {
     [stopPolling, appendHistory]
   );
 
+  // ── Relay polling ─────────────────────────────────────────────────────────
+  const scheduleRelayPoll = useCallback(
+    (deviceId: string, delay = POLL_INTERVAL_MS) => {
+      stopPolling();
+      pollTimerRef.current = setTimeout(async () => {
+        if (!isMountedRef.current) return;
+        try {
+          const serverUrl = getApiUrl();
+          const newData = await fetchBMSDataFromRelay(serverUrl, deviceId);
+          if (!isMountedRef.current) return;
+          prevDataRef.current = newData;
+          setData(newData);
+          setLastUpdateTime(Date.now());
+          setConnectionState("connected");
+          setConnectionError(null);
+          setActiveDevice((prev) =>
+            prev ? { ...prev, connected: true, lastSeen: Date.now() } : prev
+          );
+          setDevices((prev) =>
+            prev.map((d) =>
+              d.id === `relay_${deviceId}`
+                ? { ...d, connected: true, lastSeen: Date.now() }
+                : d
+            )
+          );
+          appendHistory(newData);
+          scheduleRelayPoll(deviceId, POLL_INTERVAL_MS);
+        } catch (e) {
+          if (!isMountedRef.current) return;
+          const err = e as Error;
+          if (err.message === "no_data") {
+            // ESP32 hasn't pushed yet — keep waiting silently
+            scheduleRelayPoll(deviceId, RETRY_INTERVAL_MS);
+            return;
+          }
+          const msg =
+            err.message === "timeout" ? "timeout" : "connection_failed";
+          setConnectionState("error");
+          setConnectionError(msg);
+          setActiveDevice((prev) =>
+            prev ? { ...prev, connected: false } : prev
+          );
+          scheduleRelayPoll(deviceId, RETRY_INTERVAL_MS);
+        }
+      }, delay);
+    },
+    [stopPolling, appendHistory]
+  );
+
+  // ── Connect via WiFi ──────────────────────────────────────────────────────
   const connectToWifi = useCallback(
     async (host: string, name: string) => {
       const cleanHost = normalizeHost(host);
@@ -203,9 +267,12 @@ export function BMSProvider({ children }: { children: ReactNode }) {
       setConnectionState("connecting");
       setConnectionError(null);
       setIsLoading(true);
+      setRelayDeviceId(null);
 
       const deviceId =
-        "wifi_" + Date.now().toString() + Math.random().toString(36).slice(2, 7);
+        "wifi_" +
+        Date.now().toString() +
+        Math.random().toString(36).slice(2, 7);
       const newDevice: BMSDevice = {
         id: deviceId,
         name: name || `ESP32 (${cleanHost})`,
@@ -255,6 +322,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
           STORAGE_KEY_DEVICE,
           JSON.stringify(stored)
         );
+        await AsyncStorage.removeItem(STORAGE_KEY_RELAY);
 
         schedulePoll(cleanHost, POLL_INTERVAL_MS);
       } catch (e) {
@@ -274,23 +342,68 @@ export function BMSProvider({ children }: { children: ReactNode }) {
     [stopPolling, schedulePoll, appendHistory]
   );
 
+  // ── Connect via Cloud Relay ───────────────────────────────────────────────
+  const connectToRelay = useCallback(
+    async (deviceId: string) => {
+      const cleanId = deviceId.trim();
+      if (!cleanId) return;
+
+      stopPolling();
+      setConnectionState("connecting");
+      setConnectionError(null);
+      setIsLoading(false);
+      setRelayDeviceId(cleanId);
+
+      const relayDevice: BMSDevice = {
+        id: `relay_${cleanId}`,
+        name: `Cloud (${cleanId})`,
+        type: "relay",
+        group: "Cloud Relay",
+        connected: false,
+        lastSeen: Date.now(),
+        host: cleanId,
+      };
+
+      setActiveDevice(relayDevice);
+      setDevices((prev) => {
+        const filtered = prev.filter(
+          (d) => !d.id.startsWith("relay_") && !d.id.startsWith("DEMO_")
+        );
+        return [...filtered, relayDevice];
+      });
+
+      await AsyncStorage.setItem(STORAGE_KEY_RELAY, cleanId);
+      await AsyncStorage.removeItem(STORAGE_KEY_DEVICE);
+
+      scheduleRelayPoll(cleanId, 0);
+    },
+    [stopPolling, scheduleRelayPoll]
+  );
+
+  // ── Disconnect ────────────────────────────────────────────────────────────
   const disconnectDevice = useCallback(() => {
     stopPolling();
     setConnectionState("idle");
     setConnectionError(null);
     setActiveDevice(null);
+    setRelayDeviceId(null);
     setData(null);
     setDevices((prev) =>
-      prev.filter((d) => !d.id.startsWith("wifi_"))
+      prev.filter(
+        (d) => !d.id.startsWith("wifi_") && !d.id.startsWith("relay_")
+      )
     );
     AsyncStorage.removeItem(STORAGE_KEY_DEVICE).catch(() => {});
+    AsyncStorage.removeItem(STORAGE_KEY_RELAY).catch(() => {});
   }, [stopPolling]);
 
+  // ── Load persisted state ──────────────────────────────────────────────────
   const loadState = async () => {
     try {
-      const [storedDemo, storedDevice] = await Promise.all([
+      const [storedDemo, storedDevice, storedRelay] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEY_DEMO),
         AsyncStorage.getItem(STORAGE_KEY_DEVICE),
+        AsyncStorage.getItem(STORAGE_KEY_RELAY),
       ]);
 
       const demo =
@@ -306,8 +419,9 @@ export function BMSProvider({ children }: { children: ReactNode }) {
         if (storedDevice) {
           const dev = JSON.parse(storedDevice) as StoredDevice;
           connectToWifi(dev.host, dev.name);
+        } else if (storedRelay) {
+          connectToRelay(storedRelay);
         } else {
-          // Немає збереженого пристрою — просто чекаємо підключення
           setIsLoading(false);
         }
       } else {
@@ -328,6 +442,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
         setConnectionState("idle");
         setConnectionError(null);
         setActiveDevice(null);
+        setRelayDeviceId(null);
         setDevices([]);
       }
       setDemoModeState(v);
@@ -368,7 +483,10 @@ export function BMSProvider({ children }: { children: ReactNode }) {
       activeDevice,
       lastUpdateTime,
       connectToWifi,
+      connectToRelay,
       disconnectDevice,
+      relayDeviceId,
+      relayPushUrl,
     }),
     [
       data,
@@ -384,7 +502,10 @@ export function BMSProvider({ children }: { children: ReactNode }) {
       activeDevice,
       lastUpdateTime,
       connectToWifi,
+      connectToRelay,
       disconnectDevice,
+      relayDeviceId,
+      relayPushUrl,
     ]
   );
 
