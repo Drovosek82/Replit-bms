@@ -1,7 +1,36 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useMemo, ReactNode, useCallback } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  ReactNode,
+  useCallback,
+} from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { BMSData, BMSDevice, HistoryEntry, generateDemoData, generateHistoryData } from "./bms-data";
-import { Language, translations, TranslationKey, I18nContext } from "./i18n";
+import {
+  BMSData,
+  BMSDevice,
+  HistoryEntry,
+  generateDemoData,
+  generateHistoryData,
+} from "./bms-data";
+import {
+  Language,
+  translations,
+  TranslationKey,
+  I18nContext,
+} from "./i18n";
+import { fetchBMSDataFromDevice, normalizeHost } from "./wifi-connection";
+
+export type ConnectionState = "idle" | "connecting" | "connected" | "error";
+
+interface StoredDevice {
+  id: string;
+  name: string;
+  host: string;
+}
 
 interface BMSContextType {
   data: BMSData | null;
@@ -12,9 +41,21 @@ interface BMSContextType {
   addDevice: (device: BMSDevice) => void;
   removeDevice: (id: string) => void;
   isLoading: boolean;
+
+  connectionState: ConnectionState;
+  connectionError: string | null;
+  activeDevice: BMSDevice | null;
+  lastUpdateTime: number | null;
+  connectToWifi: (host: string, name: string) => Promise<void>;
+  disconnectDevice: () => void;
 }
 
 const BMSContext = createContext<BMSContextType | null>(null);
+
+const POLL_INTERVAL_MS = 2000;
+const RETRY_INTERVAL_MS = 5000;
+const STORAGE_KEY_DEMO = "bms_demo_mode";
+const STORAGE_KEY_DEVICE = "bms_active_device";
 
 export function BMSProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<BMSData | null>(null);
@@ -22,13 +63,46 @@ export function BMSProvider({ children }: { children: ReactNode }) {
   const [devices, setDevices] = useState<BMSDevice[]>([]);
   const [demoMode, setDemoModeState] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
+
+  const [connectionState, setConnectionState] =
+    useState<ConnectionState>("idle");
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [activeDevice, setActiveDevice] = useState<BMSDevice | null>(null);
+  const [lastUpdateTime, setLastUpdateTime] = useState<number | null>(null);
+
   const prevDataRef = useRef<BMSData | null>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const demoIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
+    isMountedRef.current = true;
     loadState();
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
+
+  const appendHistory = useCallback((newData: BMSData) => {
+    setHistory((prev) => {
+      const entry: HistoryEntry = {
+        timestamp: newData.timestamp,
+        voltage: newData.totalVoltage,
+        current: newData.current,
+        soc: newData.soc,
+        temperature: newData.temperature1,
+      };
+      const updated = [...prev, entry];
+      return updated.length > 500 ? updated.slice(-500) : updated;
+    });
   }, []);
 
   useEffect(() => {
+    if (demoIntervalRef.current) {
+      clearInterval(demoIntervalRef.current);
+      demoIntervalRef.current = null;
+    }
+
     if (!demoMode) return;
 
     const initialData = generateDemoData();
@@ -37,67 +111,237 @@ export function BMSProvider({ children }: { children: ReactNode }) {
     setHistory(generateHistoryData(24));
     setDevices([
       {
-        id: "ESP32_001",
-        name: "JBD BMS #1",
+        id: "DEMO_ESP32_001",
+        name: "JBD BMS #1 (Demo)",
         type: "wifi",
         group: "Main Pack",
         connected: true,
         lastSeen: Date.now(),
-      },
-      {
-        id: "ESP32_002",
-        name: "JBD BMS #2",
-        type: "bluetooth",
-        group: "Main Pack",
-        connected: true,
-        lastSeen: Date.now(),
+        host: "192.168.1.100",
       },
     ]);
     setIsLoading(false);
 
-    const interval = setInterval(() => {
-      const newData = generateDemoData(prevDataRef.current || undefined);
+    demoIntervalRef.current = setInterval(() => {
+      if (!isMountedRef.current) return;
+      const newData = generateDemoData(prevDataRef.current ?? undefined);
       prevDataRef.current = newData;
       setData(newData);
-      setHistory((prev) => {
-        const entry: HistoryEntry = {
-          timestamp: Date.now(),
-          voltage: newData.totalVoltage,
-          current: newData.current,
-          soc: newData.soc,
-          temperature: newData.temperature1,
-        };
-        const updated = [...prev, entry];
-        return updated.length > 500 ? updated.slice(-500) : updated;
-      });
-    }, 2000);
+      appendHistory(newData);
+    }, POLL_INTERVAL_MS);
 
-    return () => clearInterval(interval);
-  }, [demoMode]);
+    return () => {
+      if (demoIntervalRef.current) {
+        clearInterval(demoIntervalRef.current);
+        demoIntervalRef.current = null;
+      }
+    };
+  }, [demoMode, appendHistory]);
+
+  const stopPolling = useCallback(() => {
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
+  }, []);
+
+  const schedulePoll = useCallback(
+    (host: string, delay = POLL_INTERVAL_MS) => {
+      stopPolling();
+      pollTimerRef.current = setTimeout(async () => {
+        if (!isMountedRef.current) return;
+        try {
+          const newData = await fetchBMSDataFromDevice(host);
+          if (!isMountedRef.current) return;
+          prevDataRef.current = newData;
+          setData(newData);
+          setLastUpdateTime(Date.now());
+          setConnectionState("connected");
+          setConnectionError(null);
+          setActiveDevice((prev) =>
+            prev ? { ...prev, connected: true, lastSeen: Date.now() } : prev
+          );
+          setDevices((prev) =>
+            prev.map((d) =>
+              d.host === host
+                ? { ...d, connected: true, lastSeen: Date.now() }
+                : d
+            )
+          );
+          appendHistory(newData);
+          schedulePoll(host, POLL_INTERVAL_MS);
+        } catch (e) {
+          if (!isMountedRef.current) return;
+          const err = e as Error;
+          const msg =
+            err.message === "timeout"
+              ? "timeout"
+              : "connection_failed";
+          setConnectionState("error");
+          setConnectionError(msg);
+          setActiveDevice((prev) =>
+            prev ? { ...prev, connected: false } : prev
+          );
+          setDevices((prev) =>
+            prev.map((d) =>
+              d.host === host ? { ...d, connected: false } : d
+            )
+          );
+          schedulePoll(host, RETRY_INTERVAL_MS);
+        }
+      }, delay);
+    },
+    [stopPolling, appendHistory]
+  );
+
+  const connectToWifi = useCallback(
+    async (host: string, name: string) => {
+      const cleanHost = normalizeHost(host);
+      if (!cleanHost) return;
+
+      stopPolling();
+      setConnectionState("connecting");
+      setConnectionError(null);
+      setIsLoading(true);
+
+      const deviceId =
+        "wifi_" + Date.now().toString() + Math.random().toString(36).slice(2, 7);
+      const newDevice: BMSDevice = {
+        id: deviceId,
+        name: name || `ESP32 (${cleanHost})`,
+        type: "wifi",
+        group: "Real Device",
+        connected: false,
+        lastSeen: Date.now(),
+        host: cleanHost,
+      };
+
+      setActiveDevice(newDevice);
+      setDevices((prev) => {
+        const filtered = prev.filter(
+          (d) => d.host !== cleanHost && !d.id.startsWith("DEMO_")
+        );
+        return [...filtered, newDevice];
+      });
+
+      try {
+        const newData = await fetchBMSDataFromDevice(cleanHost);
+        if (!isMountedRef.current) return;
+
+        prevDataRef.current = newData;
+        setData(newData);
+        setLastUpdateTime(Date.now());
+        setConnectionState("connected");
+        setIsLoading(false);
+
+        const connected: BMSDevice = {
+          ...newDevice,
+          connected: true,
+          lastSeen: Date.now(),
+        };
+        setActiveDevice(connected);
+        setDevices((prev) =>
+          prev.map((d) => (d.id === deviceId ? connected : d))
+        );
+
+        appendHistory(newData);
+
+        const stored: StoredDevice = {
+          id: deviceId,
+          name: connected.name,
+          host: cleanHost,
+        };
+        await AsyncStorage.setItem(
+          STORAGE_KEY_DEVICE,
+          JSON.stringify(stored)
+        );
+
+        schedulePoll(cleanHost, POLL_INTERVAL_MS);
+      } catch (e) {
+        if (!isMountedRef.current) return;
+        const err = e as Error;
+        const msg =
+          err.message === "timeout" ? "timeout" : "connection_failed";
+        setConnectionState("error");
+        setConnectionError(msg);
+        setIsLoading(false);
+        setActiveDevice((prev) =>
+          prev ? { ...prev, connected: false } : prev
+        );
+        schedulePoll(cleanHost, RETRY_INTERVAL_MS);
+      }
+    },
+    [stopPolling, schedulePoll, appendHistory]
+  );
+
+  const disconnectDevice = useCallback(() => {
+    stopPolling();
+    setConnectionState("idle");
+    setConnectionError(null);
+    setActiveDevice(null);
+    setData(null);
+    setDevices((prev) =>
+      prev.filter((d) => !d.id.startsWith("wifi_"))
+    );
+    AsyncStorage.removeItem(STORAGE_KEY_DEVICE).catch(() => {});
+  }, [stopPolling]);
 
   const loadState = async () => {
     try {
-      const stored = await AsyncStorage.getItem("bms_demo_mode");
-      if (stored !== null) {
-        setDemoModeState(JSON.parse(stored));
+      const [storedDemo, storedDevice] = await Promise.all([
+        AsyncStorage.getItem(STORAGE_KEY_DEMO),
+        AsyncStorage.getItem(STORAGE_KEY_DEVICE),
+      ]);
+
+      const demo =
+        storedDemo !== null ? (JSON.parse(storedDemo) as boolean) : true;
+      setDemoModeState(demo);
+
+      if (!demo && storedDevice) {
+        const dev = JSON.parse(storedDevice) as StoredDevice;
+        connectToWifi(dev.host, dev.name);
+      } else if (demo) {
+        setIsLoading(false);
       }
-    } catch (e) {
-      console.error("Failed to load state:", e);
+    } catch {
+      setDemoModeState(true);
+      setIsLoading(false);
     }
   };
 
-  const setDemoMode = async (v: boolean) => {
-    setDemoModeState(v);
-    await AsyncStorage.setItem("bms_demo_mode", JSON.stringify(v));
-  };
+  const setDemoMode = useCallback(
+    async (v: boolean) => {
+      if (!v) {
+        stopPolling();
+        setData(null);
+        setHistory([]);
+        setConnectionState("idle");
+        setConnectionError(null);
+        setActiveDevice(null);
+        setDevices([]);
+      }
+      setDemoModeState(v);
+      await AsyncStorage.setItem(STORAGE_KEY_DEMO, JSON.stringify(v));
+    },
+    [stopPolling]
+  );
 
   const addDevice = useCallback((device: BMSDevice) => {
     setDevices((prev) => [...prev, device]);
   }, []);
 
-  const removeDevice = useCallback((id: string) => {
-    setDevices((prev) => prev.filter((d) => d.id !== id));
-  }, []);
+  const removeDevice = useCallback(
+    (id: string) => {
+      setDevices((prev) => {
+        const device = prev.find((d) => d.id === id);
+        if (device && activeDevice?.id === id) {
+          disconnectDevice();
+        }
+        return prev.filter((d) => d.id !== id);
+      });
+    },
+    [activeDevice, disconnectDevice]
+  );
 
   const value = useMemo(
     () => ({
@@ -109,8 +353,29 @@ export function BMSProvider({ children }: { children: ReactNode }) {
       addDevice,
       removeDevice,
       isLoading,
+      connectionState,
+      connectionError,
+      activeDevice,
+      lastUpdateTime,
+      connectToWifi,
+      disconnectDevice,
     }),
-    [data, history, devices, demoMode, isLoading, addDevice, removeDevice]
+    [
+      data,
+      history,
+      devices,
+      demoMode,
+      setDemoMode,
+      addDevice,
+      removeDevice,
+      isLoading,
+      connectionState,
+      connectionError,
+      activeDevice,
+      lastUpdateTime,
+      connectToWifi,
+      disconnectDevice,
+    ]
   );
 
   return <BMSContext.Provider value={value}>{children}</BMSContext.Provider>;
@@ -143,5 +408,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo(() => ({ lang, setLang, t }), [lang, t]);
 
-  return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
+  return (
+    <I18nContext.Provider value={value}>{children}</I18nContext.Provider>
+  );
 }

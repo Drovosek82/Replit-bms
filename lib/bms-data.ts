@@ -43,10 +43,10 @@ export interface BMSDevice {
   group: string;
   connected: boolean;
   lastSeen: number;
+  host?: string;
 }
 
 const CELL_COUNT = 14;
-const NOMINAL_CELL_VOLTAGE = 3.7;
 const MIN_CELL_VOLTAGE = 3.0;
 const MAX_CELL_VOLTAGE = 4.2;
 
@@ -151,7 +151,9 @@ export function generateHistoryData(hours: number = 24): HistoryEntry[] {
   return entries;
 }
 
-export function getChargingStatus(current: number): "charging" | "discharging" | "idle" {
+export function getChargingStatus(
+  current: number
+): "charging" | "discharging" | "idle" {
   if (current > 0.5) return "charging";
   if (current < -0.5) return "discharging";
   return "idle";

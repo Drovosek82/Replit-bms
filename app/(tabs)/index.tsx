@@ -6,6 +6,7 @@ import {
   ScrollView,
   Platform,
   Dimensions,
+  ActivityIndicator,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -20,19 +21,122 @@ import Colors from "@/constants/colors";
 
 const screenWidth = Dimensions.get("window").width;
 
+function NoDataScreen() {
+  const { t } = useI18n();
+  const { connectionState, connectionError, demoMode, isLoading } = useBMS();
+  const insets = useSafeAreaInsets();
+  const webTopInset = Platform.OS === "web" ? 67 : 0;
+
+  const isConnecting = connectionState === "connecting" || isLoading;
+  const isError = connectionState === "error";
+
+  return (
+    <View
+      style={[
+        noDataStyles.container,
+        {
+          backgroundColor: Colors.dark.background,
+          paddingTop: insets.top + webTopInset,
+        },
+      ]}
+    >
+      {isConnecting ? (
+        <>
+          <ActivityIndicator size="large" color={Colors.dark.tint} />
+          <Text style={noDataStyles.title}>{t("connecting")}</Text>
+          <Text style={noDataStyles.subtitle}>
+            {demoMode ? t("scanning") : "ESP32 WiFi..."}
+          </Text>
+        </>
+      ) : isError ? (
+        <>
+          <View style={noDataStyles.iconBox}>
+            <Ionicons
+              name="wifi-outline"
+              size={48}
+              color={Colors.dark.danger}
+            />
+          </View>
+          <Text style={noDataStyles.title}>{t("connectionError")}</Text>
+          <Text style={noDataStyles.subtitle}>
+            {connectionError === "timeout" ? t("timeout") : t("connectionFailed")}
+          </Text>
+          <View style={noDataStyles.retryBox}>
+            <ActivityIndicator size="small" color={Colors.dark.warning} />
+            <Text style={noDataStyles.retryText}>{t("retrying")}</Text>
+          </View>
+        </>
+      ) : (
+        <>
+          <View style={noDataStyles.iconBox}>
+            <Ionicons
+              name="battery-charging-outline"
+              size={48}
+              color={Colors.dark.textMuted}
+            />
+          </View>
+          <Text style={noDataStyles.title}>{t("noConnection")}</Text>
+          <Text style={noDataStyles.subtitle}>
+            {t("tapToSetup")}
+          </Text>
+        </>
+      )}
+    </View>
+  );
+}
+
+const noDataStyles = StyleSheet.create({
+  container: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 32,
+  },
+  iconBox: {
+    width: 80,
+    height: 80,
+    borderRadius: 20,
+    backgroundColor: Colors.dark.surface,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 4,
+  },
+  title: {
+    color: Colors.dark.text,
+    fontSize: 20,
+    fontWeight: "700" as const,
+    textAlign: "center",
+  },
+  subtitle: {
+    color: Colors.dark.textSecondary,
+    fontSize: 14,
+    fontWeight: "400" as const,
+    textAlign: "center",
+  },
+  retryBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  retryText: {
+    color: Colors.dark.warning,
+    fontSize: 13,
+    fontWeight: "500" as const,
+  },
+});
+
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
-  const { data, history, demoMode, isLoading } = useBMS();
+  const { data, history, demoMode, isLoading, connectionState, activeDevice, lastUpdateTime } = useBMS();
   const { t } = useI18n();
 
   const webTopInset = Platform.OS === "web" ? 67 : 0;
 
   if (isLoading || !data) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: Colors.dark.background }]}>
-        <Ionicons name="battery-charging" size={48} color={Colors.dark.tint} />
-        <Text style={styles.loadingText}>{t("scanning")}</Text>
-      </View>
+      <NoDataScreen />
     );
   }
 
@@ -68,7 +172,7 @@ export default function DashboardScreen() {
       showsVerticalScrollIndicator={false}
     >
       <View style={styles.headerRow}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>BMS Monitor</Text>
           <View style={styles.statusRow}>
             <View style={[styles.statusDot, { backgroundColor: statusColor }]} />
@@ -80,10 +184,49 @@ export default function DashboardScreen() {
                 <Text style={styles.demoBadgeText}>{t("demo")}</Text>
               </View>
             )}
+            {!demoMode && activeDevice && (
+              <Text style={styles.deviceLabel} numberOfLines={1}>
+                {activeDevice.host}
+              </Text>
+            )}
           </View>
         </View>
-        <View style={styles.connectionIndicator}>
-          <Ionicons name="wifi" size={16} color={Colors.dark.success} />
+        <View
+          style={[
+            styles.connectionIndicator,
+            {
+              backgroundColor:
+                connectionState === "connected"
+                  ? Colors.dark.success + "18"
+                  : connectionState === "error"
+                  ? Colors.dark.danger + "18"
+                  : connectionState === "connecting"
+                  ? Colors.dark.warning + "18"
+                  : Colors.dark.textMuted + "18",
+            },
+          ]}
+        >
+          <Ionicons
+            name={
+              connectionState === "connected"
+                ? "wifi"
+                : connectionState === "error"
+                ? "wifi-outline"
+                : connectionState === "connecting"
+                ? "sync-outline"
+                : "wifi-outline"
+            }
+            size={16}
+            color={
+              connectionState === "connected"
+                ? Colors.dark.success
+                : connectionState === "error"
+                ? Colors.dark.danger
+                : connectionState === "connecting"
+                ? Colors.dark.warning
+                : Colors.dark.textMuted
+            }
+          />
         </View>
       </View>
 
@@ -335,9 +478,15 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 10,
-    backgroundColor: Colors.dark.success + "18",
     justifyContent: "center",
     alignItems: "center",
+  },
+  deviceLabel: {
+    color: Colors.dark.tint,
+    fontSize: 11,
+    fontWeight: "500" as const,
+    fontVariant: ["tabular-nums"] as any,
+    maxWidth: 120,
   },
   gaugeSection: {
     flexDirection: "row",
