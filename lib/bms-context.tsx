@@ -297,10 +297,20 @@ export function BMSProvider({ children }: { children: ReactNode }) {
         storedDemo !== null ? (JSON.parse(storedDemo) as boolean) : true;
       setDemoModeState(demo);
 
-      if (!demo && storedDevice) {
-        const dev = JSON.parse(storedDevice) as StoredDevice;
-        connectToWifi(dev.host, dev.name);
-      } else if (demo) {
+      if (!demo) {
+        // Очищаємо демо-дані, які могли генеруватись до завантаження налаштувань
+        setData(null);
+        setHistory([]);
+        setDevices([]);
+
+        if (storedDevice) {
+          const dev = JSON.parse(storedDevice) as StoredDevice;
+          connectToWifi(dev.host, dev.name);
+        } else {
+          // Немає збереженого пристрою — просто чекаємо підключення
+          setIsLoading(false);
+        }
+      } else {
         setIsLoading(false);
       }
     } catch {
