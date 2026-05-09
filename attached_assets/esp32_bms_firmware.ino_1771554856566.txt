@@ -1,0 +1,59 @@
+// ESP32 BMS Firmware Sample
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+
+// Configuration
+const char* ssid = "YOUR_WIFI";
+const char* password = "YOUR_PASSWORD";
+const char* apiEndpoint = "YOUR_API_ENDPOINT";
+const char* apiKey = "YOUR_API_KEY";
+
+// BMS UART pins
+#define RX_PIN 16
+#define TX_PIN 17
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RX_PIN, TX_PIN);
+  
+  // WiFi connection
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected!");
+  
+  // BLE initialization
+  BLEDevice::init("ESP32-BMS");
+}
+
+void loop() {
+  // Read BMS data via UART
+  if (Serial2.available()) {
+    // Parse JBD BMS protocol
+    byte data[128];
+    int len = Serial2.readBytes(data, 128);
+    
+    // Send to server
+    sendBMSData(parseBMSData(data, len));
+  }
+  
+  delay(2000);
+}
+
+void sendBMSData(JsonObject data) {
+  HTTPClient http;
+  http.begin(apiEndpoint);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", apiKey);
+  
+  String payload;
+  serializeJson(data, payload);
+  int httpCode = http.POST(payload);
+  
+  http.end();
+}
