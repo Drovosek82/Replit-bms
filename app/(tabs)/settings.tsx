@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   ActivityIndicator,
   Alert,
+  Linking,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -20,6 +21,8 @@ import { useBMS, ConnectionState } from "@/lib/bms-context";
 import { useI18n } from "@/lib/i18n";
 import Colors from "@/constants/colors";
 import { getApiUrl } from "@/lib/query-client";
+import { ScanModal } from "@/components/ScanModal";
+import { BLEDevice } from "@/lib/wifi-scanner";
 
 function haptic() {
   if (Platform.OS !== "web") {
@@ -473,6 +476,7 @@ export default function SettingsScreen() {
   const webTopInset = Platform.OS === "web" ? 67 : 0;
 
   const [wifiModalVisible, setWifiModalVisible] = useState(false);
+  const [scanModalVisible, setScanModalVisible] = useState(false);
 
   const handleLanguageToggle = () => {
     haptic();
@@ -487,12 +491,37 @@ export default function SettingsScreen() {
   const handleConnectWifi = useCallback(
     async (host: string, name: string) => {
       await connectToWifi(host, name);
-      if (connectionState !== "error") {
-        setWifiModalVisible(false);
-      }
+      setWifiModalVisible(false);
     },
-    [connectToWifi, connectionState]
+    [connectToWifi]
   );
+
+  const handleScanSelectWifi = useCallback(
+    async (host: string, name: string) => {
+      setScanModalVisible(false);
+      if (demoMode) await setDemoMode(false);
+      await connectToWifi(host, name);
+    },
+    [connectToWifi, demoMode, setDemoMode]
+  );
+
+  const handleScanSelectBLE = useCallback((_device: BLEDevice) => {
+    // BLE connection flow placeholder for native build
+    Alert.alert(
+      "Bluetooth",
+      "BLE підключення буде доступне у нативному збірнику.",
+      [{ text: "OK" }]
+    );
+  }, []);
+
+  const handleOpenWebInterface = useCallback(() => {
+    if (!activeDevice?.host) return;
+    haptic();
+    const url = `http://${activeDevice.host}`;
+    Linking.openURL(url).catch(() => {
+      Alert.alert(t("connectionError"), `${t("connectionFailed")}: ${url}`);
+    });
+  }, [activeDevice, t]);
 
   const handleDisconnect = () => {
     haptic();
@@ -711,10 +740,57 @@ export default function SettingsScreen() {
               label={t("bluetooth")}
               value={t("bleInfo")}
               color={Colors.dark.info}
+              showArrow
+              onPress={() => {
+                haptic();
+                setScanModalVisible(true);
+              }}
             />
           </View>
           {!demoMode && (
             <Text style={styles.bleHintText}>{t("bleInfoDesc")}</Text>
+          )}
+
+          {/* Scan network button */}
+          <Pressable
+            style={({ pressed }) => [
+              styles.scanNetworkBtn,
+              pressed && { opacity: 0.75 },
+            ]}
+            onPress={() => {
+              haptic();
+              setScanModalVisible(true);
+            }}
+          >
+            <Ionicons name="search" size={16} color={Colors.dark.tint} />
+            <Text style={styles.scanNetworkBtnText}>{t("scanNetwork")}</Text>
+            <Ionicons name="chevron-forward" size={14} color={Colors.dark.textMuted} />
+          </Pressable>
+
+          {/* Open ESP32 web interface */}
+          {!demoMode && activeDevice?.host && (
+            <Pressable
+              style={({ pressed }) => [
+                styles.webInterfaceBtn,
+                pressed && { opacity: 0.75 },
+              ]}
+              onPress={handleOpenWebInterface}
+            >
+              <View style={styles.webInterfaceBtnLeft}>
+                <View style={styles.webInterfaceBtnIcon}>
+                  <Ionicons name="globe-outline" size={18} color={Colors.dark.accent} />
+                </View>
+                <View>
+                  <Text style={styles.webInterfaceBtnLabel}>
+                    {t("openWebInterface")}
+                  </Text>
+                  <Text style={styles.webInterfaceBtnValue}>
+                    http://{activeDevice.host}
+                  </Text>
+                </View>
+              </View>
+              <Ionicons name="open-outline" size={16} color={Colors.dark.accent} />
+            </Pressable>
           )}
         </View>
 
@@ -799,6 +875,13 @@ export default function SettingsScreen() {
         initialName={activeDevice?.name ?? ""}
         connectionState={connectionState}
         connectionError={connectionError}
+      />
+
+      <ScanModal
+        visible={scanModalVisible}
+        onClose={() => setScanModalVisible(false)}
+        onSelectWifi={handleScanSelectWifi}
+        onSelectBLE={handleScanSelectBLE}
       />
     </>
   );
@@ -1172,5 +1255,61 @@ const styles = StyleSheet.create({
     color: "#000",
     fontSize: 15,
     fontWeight: "700" as const,
+  },
+  scanNetworkBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 10,
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.dark.tint + "40",
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
+  scanNetworkBtnText: {
+    flex: 1,
+    color: Colors.dark.tint,
+    fontSize: 14,
+    fontWeight: "600" as const,
+  },
+  webInterfaceBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.dark.accent + "40",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  webInterfaceBtnLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  webInterfaceBtnIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: Colors.dark.accent + "18",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  webInterfaceBtnLabel: {
+    color: Colors.dark.text,
+    fontSize: 14,
+    fontWeight: "600" as const,
+  },
+  webInterfaceBtnValue: {
+    color: Colors.dark.accent,
+    fontSize: 11,
+    fontWeight: "400" as const,
+    marginTop: 1,
+    fontVariant: ["tabular-nums"] as any,
   },
 });
