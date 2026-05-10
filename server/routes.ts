@@ -66,7 +66,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     deviceHistory.set(deviceId, hist);
 
     // Persist to Supabase asynchronously — don't block the response
-    insertReading(deviceId, body as Record<string, unknown>).catch(() => {});
+    insertReading(deviceId, body as Record<string, unknown>).catch((err) => {
+      console.warn("[supabase] insert failed:", err?.message ?? err);
+    });
 
     res.json({ ok: true, deviceId, receivedAt: now });
   });
