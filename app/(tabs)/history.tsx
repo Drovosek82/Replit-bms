@@ -14,6 +14,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useBMS } from "@/lib/bms-context";
 import { useI18n } from "@/lib/i18n";
 import { FullChart } from "@/components/FullChart";
+import { StaleBanner } from "@/components/StaleBanner";
 import { HistoryEntry } from "@/lib/bms-data";
 import { getApiUrl } from "@/lib/query-client";
 import { fetch } from "expo/fetch";
@@ -44,7 +45,7 @@ interface DbHistoryResponse {
 
 export default function HistoryScreen() {
   const insets = useSafeAreaInsets();
-  const { history, isLoading, demoMode, relayDeviceId } = useBMS();
+  const { history, isLoading, demoMode, relayDeviceId, esp32PushedAt } = useBMS();
   const { t, lang } = useI18n();
   const webTopInset = Platform.OS === "web" ? 67 : 0;
   const [range, setRange] = useState<RangeKey>("24h");
@@ -158,6 +159,13 @@ export default function HistoryScreen() {
           </Text>
         )}
       </View>
+
+      {/* Stale data warning */}
+      <StaleBanner
+        pushedAt={esp32PushedAt}
+        lang={lang}
+        isRelayMode={isRelayMode}
+      />
 
       {/* Time range selector (relay mode only) */}
       {isRelayMode && (

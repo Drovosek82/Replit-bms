@@ -4,10 +4,15 @@ import { parseESP32Response } from "./wifi-connection";
 
 const RELAY_TIMEOUT_MS = 8000;
 
+export interface RelayResult {
+  data: BMSData;
+  pushedAt: number;
+}
+
 export async function fetchBMSDataFromRelay(
   serverUrl: string,
   deviceId: string
-): Promise<BMSData> {
+): Promise<RelayResult> {
   const url = new URL(
     `/api/bms/latest?device_id=${encodeURIComponent(deviceId)}`,
     serverUrl
@@ -25,8 +30,10 @@ export async function fetchBMSDataFromRelay(
     if (res.status === 404) throw new Error("no_data");
     if (!res.ok) throw new Error("server_error");
 
-    const json = await res.json();
-    return parseESP32Response(json as any);
+    const json = await res.json() as Record<string, unknown>;
+    const pushedAt = typeof json._receivedAt === "number" ? json._receivedAt : Date.now();
+    const bmsData = parseESP32Response(json as any);
+    return { data: bmsData, pushedAt };
   } catch (e) {
     clearTimeout(timeout);
     const err = e as Error;

@@ -17,6 +17,7 @@ import { GaugeCircle } from "@/components/GaugeCircle";
 import { StatCard } from "@/components/StatCard";
 import { StatusBadge } from "@/components/StatusBadge";
 import { MiniChart } from "@/components/MiniChart";
+import { StaleBanner } from "@/components/StaleBanner";
 import Colors from "@/constants/colors";
 
 const screenWidth = Dimensions.get("window").width;
@@ -134,8 +135,8 @@ const noDataStyles = StyleSheet.create({
 
 export default function DashboardScreen() {
   const insets = useSafeAreaInsets();
-  const { data, history, demoMode, isLoading, connectionState, activeDevice, lastUpdateTime } = useBMS();
-  const { t } = useI18n();
+  const { data, history, demoMode, isLoading, connectionState, activeDevice, lastUpdateTime, esp32PushedAt, relayDeviceId } = useBMS();
+  const { t, lang } = useI18n();
 
   const webTopInset = Platform.OS === "web" ? 67 : 0;
 
@@ -234,6 +235,12 @@ export default function DashboardScreen() {
           />
         </View>
       </View>
+
+      <StaleBanner
+        pushedAt={esp32PushedAt}
+        lang={lang}
+        isRelayMode={!demoMode && !!relayDeviceId}
+      />
 
       <View style={styles.gaugeSection}>
         <GaugeCircle

@@ -26,6 +26,9 @@ import { fetchBMSDataFromDevice, normalizeHost } from "./wifi-connection";
 import { fetchBMSDataFromRelay, getRelayPushUrl } from "./relay-connection";
 import { getApiUrl } from "./query-client";
 
+export const STALE_WARN_MS = 60_000;    // 1 хв — жовтий
+export const STALE_ERROR_MS = 300_000;  // 5 хв — червоний
+
 export type ConnectionState = "idle" | "connecting" | "connected" | "error";
 
 interface StoredDevice {
@@ -48,6 +51,7 @@ interface BMSContextType {
   connectionError: string | null;
   activeDevice: BMSDevice | null;
   lastUpdateTime: number | null;
+  esp32PushedAt: number | null;
   connectToWifi: (host: string, name: string) => Promise<void>;
   connectToRelay: (deviceId: string) => Promise<void>;
   disconnectDevice: () => void;
@@ -75,6 +79,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [activeDevice, setActiveDevice] = useState<BMSDevice | null>(null);
   const [lastUpdateTime, setLastUpdateTime] = useState<number | null>(null);
+  const [esp32PushedAt, setEsp32PushedAt] = useState<number | null>(null);
   const [relayDeviceId, setRelayDeviceId] = useState<string | null>(null);
 
   const prevDataRef = useRef<BMSData | null>(null);
@@ -216,11 +221,12 @@ export function BMSProvider({ children }: { children: ReactNode }) {
         if (!isMountedRef.current) return;
         try {
           const serverUrl = getApiUrl();
-          const newData = await fetchBMSDataFromRelay(serverUrl, deviceId);
+          const result = await fetchBMSDataFromRelay(serverUrl, deviceId);
           if (!isMountedRef.current) return;
-          prevDataRef.current = newData;
-          setData(newData);
+          prevDataRef.current = result.data;
+          setData(result.data);
           setLastUpdateTime(Date.now());
+          setEsp32PushedAt(result.pushedAt);
           setConnectionState("connected");
           setConnectionError(null);
           setActiveDevice((prev) =>
@@ -233,7 +239,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
                 : d
             )
           );
-          appendHistory(newData);
+          appendHistory(result.data);
           scheduleRelayPoll(deviceId, POLL_INTERVAL_MS);
         } catch (e) {
           if (!isMountedRef.current) return;
@@ -482,6 +488,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
       connectionError,
       activeDevice,
       lastUpdateTime,
+      esp32PushedAt,
       connectToWifi,
       connectToRelay,
       disconnectDevice,
@@ -501,6 +508,7 @@ export function BMSProvider({ children }: { children: ReactNode }) {
       connectionError,
       activeDevice,
       lastUpdateTime,
+      esp32PushedAt,
       connectToWifi,
       connectToRelay,
       disconnectDevice,
