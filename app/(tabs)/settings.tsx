@@ -17,8 +17,12 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
+import { useQuery } from "@tanstack/react-query";
+import { fetch } from "expo/fetch";
 import { useBMS, ConnectionState } from "@/lib/bms-context";
 import { useI18n } from "@/lib/i18n";
+import { getApiUrl } from "@/lib/query-client";
+import { getEsp32Sketch } from "@/lib/esp32-sketch";
 import Colors from "@/constants/colors";
 import { ScanModal } from "@/components/ScanModal";
 import { BLEDevice } from "@/lib/wifi-scanner";
@@ -545,6 +549,219 @@ void pushBMSData(float v, float i, int soc) {
   );
 }
 
+// ── Helper ────────────────────────────────────────────────────────────────
+function relativeAge(ageMs: number, lang: string): string {
+  const mins = Math.floor(ageMs / 60_000);
+  if (mins < 1) return lang === "uk" ? "щойно" : "just now";
+  if (mins < 60) return `${mins} ${lang === "uk" ? "хв тому" : "min ago"}`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs} ${lang === "uk" ? "г тому" : "h ago"}`;
+  return `${Math.floor(hrs / 24)} ${lang === "uk" ? "дн тому" : "d ago"}`;
+}
+
+// ── Cloud Devices Section ─────────────────────────────────────────────────
+interface CloudDevice {
+  device_id: string;
+  last_seen: string;
+  count: number;
+  ageMs: number;
+}
+
+function CloudDevicesSection({
+  onConnect,
+  activeRelayId,
+}: {
+  onConnect: (id: string) => void;
+  activeRelayId: string | null;
+}) {
+  const { t, lang } = useI18n();
+  const { data: devices, isLoading, isFetching, refetch } = useQuery<CloudDevice[]>({
+    queryKey: ["/api/bms/devices"],
+    refetchInterval: 30_000,
+    staleTime: 20_000,
+    queryFn: async () => {
+      const url = new URL("/api/bms/devices", getApiUrl());
+      const res = await fetch(url.toString());
+      if (!res.ok) throw new Error(`${res.status}`);
+      return res.json();
+    },
+  });
+
+  return (
+    <View style={styles.cloudSection}>
+      <View style={styles.cloudHeader}>
+        <View style={styles.cloudHeaderLeft}>
+          <View style={styles.cloudHeaderIcon}>
+            <Ionicons name="server-outline" size={18} color={Colors.dark.tint} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cloudTitle}>{t("cloudDevices")}</Text>
+            <Text style={styles.cloudSubtitle}>
+              {devices && devices.length > 0
+                ? `${devices.length} ${lang === "uk" ? "пристроїв у БД" : "devices in DB"}`
+                : t("noCloudDevices")}
+            </Text>
+          </View>
+        </View>
+        <Pressable
+          style={({ pressed }) => [styles.cloudRefreshBtn, pressed && { opacity: 0.6 }]}
+          onPress={() => { haptic(); refetch(); }}
+        >
+          {isFetching
+            ? <ActivityIndicator size={14} color={Colors.dark.tint} />
+            : <Ionicons name="refresh" size={15} color={Colors.dark.tint} />}
+        </Pressable>
+      </View>
+
+      {isLoading && (
+        <View style={styles.cloudLoadingRow}>
+          <ActivityIndicator size="small" color={Colors.dark.tint} />
+          <Text style={styles.cloudLoadingText}>
+            {lang === "uk" ? "Завантаження..." : "Loading..."}
+          </Text>
+        </View>
+      )}
+
+      {!isLoading && (!devices || devices.length === 0) && (
+        <View style={styles.cloudEmptyRow}>
+          <Ionicons name="cloud-offline-outline" size={28} color={Colors.dark.textMuted} />
+          <Text style={styles.cloudEmptyText}>{t("noCloudDevices")}</Text>
+        </View>
+      )}
+
+      {devices && devices.length > 0 && (
+        <View style={styles.cloudDeviceList}>
+          {devices.map((d) => {
+            const isActive = activeRelayId === d.device_id;
+            return (
+              <Pressable
+                key={d.device_id}
+                style={({ pressed }) => [
+                  styles.cloudDeviceRow,
+                  isActive && styles.cloudDeviceRowActive,
+                  pressed && { opacity: 0.8 },
+                ]}
+                onPress={() => { haptic(); onConnect(d.device_id); }}
+              >
+                <View style={[styles.cloudDeviceIcon, { backgroundColor: isActive ? Colors.dark.tint + "20" : Colors.dark.surface }]}>
+                  <Ionicons
+                    name="cloud"
+                    size={16}
+                    color={isActive ? Colors.dark.tint : Colors.dark.textMuted}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.cloudDeviceName, isActive && { color: Colors.dark.tint }]}>
+                    {d.device_id}
+                  </Text>
+                  <Text style={styles.cloudDeviceMeta}>
+                    {relativeAge(d.ageMs, lang)} · {d.count} {t("dbRecords")}
+                  </Text>
+                </View>
+                {isActive ? (
+                  <View style={styles.cloudActiveChip}>
+                    <Ionicons name="checkmark-circle" size={13} color={Colors.dark.tint} />
+                    <Text style={styles.cloudActiveChipText}>
+                      {lang === "uk" ? "Активний" : "Active"}
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={styles.cloudConnectChip}>
+                    <Ionicons name="link" size={12} color={Colors.dark.accent} />
+                    <Text style={styles.cloudConnectChipText}>{t("connectRelay")}</Text>
+                  </View>
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+    </View>
+  );
+}
+
+// ── ESP32 Full Sketch Modal ───────────────────────────────────────────────
+function ESP32SketchModal({
+  visible,
+  onClose,
+  pushUrl,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  pushUrl: string;
+}) {
+  const { t, lang } = useI18n();
+  const insets = useSafeAreaInsets();
+  const [copied, setCopied] = useState(false);
+  const sketch = getEsp32Sketch(pushUrl);
+
+  const handleCopy = useCallback(async () => {
+    haptic();
+    await Clipboard.setStringAsync(sketch);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2500);
+  }, [sketch]);
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="slide"
+      presentationStyle="pageSheet"
+      onRequestClose={onClose}
+    >
+      <View style={[styles.modalContainer, { backgroundColor: Colors.dark.background }]}>
+        <View style={[styles.modalHeader, { paddingTop: Platform.OS === "ios" ? insets.top + 12 : 20 }]}>
+          <View style={styles.modalHandle} />
+          <View style={styles.sketchModalTitleRow}>
+            <Ionicons name="code-slash" size={18} color={Colors.dark.tint} />
+            <Text style={styles.modalTitle}>{t("esp32FullSketch")}</Text>
+          </View>
+          <Pressable onPress={onClose} style={styles.modalClose}>
+            <Ionicons name="close" size={22} color={Colors.dark.textSecondary} />
+          </Pressable>
+        </View>
+
+        <View style={styles.sketchInfoBox}>
+          <Ionicons name="hardware-chip-outline" size={15} color={Colors.dark.accent} />
+          <Text style={styles.sketchInfoText}>
+            {lang === "uk"
+              ? "Arduino IDE · ESP32 · JBD BMS UART\nПотрібні: ArduinoJson v6, WiFi.h, HTTPClient.h"
+              : "Arduino IDE · ESP32 · JBD BMS UART\nRequired: ArduinoJson v6, WiFi.h, HTTPClient.h"}
+          </Text>
+        </View>
+
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.sketchScrollContent}
+          showsVerticalScrollIndicator
+        >
+          <View style={styles.sketchCodeBox}>
+            <Text style={styles.sketchCodeText} selectable>
+              {sketch}
+            </Text>
+          </View>
+        </ScrollView>
+
+        <View style={[styles.modalFooter, { paddingBottom: Platform.OS === "ios" ? Math.max(insets.bottom, 20) : 20 }]}>
+          <Pressable style={styles.cancelButton} onPress={onClose}>
+            <Text style={styles.cancelButtonText}>{t("cancel")}</Text>
+          </Pressable>
+          <Pressable style={styles.connectButton} onPress={handleCopy}>
+            <Ionicons
+              name={copied ? "checkmark" : "copy-outline"}
+              size={16}
+              color="#000"
+            />
+            <Text style={styles.connectButtonText}>
+              {copied ? t("codeCopied") : t("copyCode")}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
 export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const {
@@ -567,6 +784,7 @@ export default function SettingsScreen() {
 
   const [wifiModalVisible, setWifiModalVisible] = useState(false);
   const [scanModalVisible, setScanModalVisible] = useState(false);
+  const [sketchModalVisible, setSketchModalVisible] = useState(false);
   const [relayIdInput, setRelayIdInput] = useState(relayDeviceId ?? "");
   const [urlCopied, setUrlCopied] = useState(false);
 
@@ -910,6 +1128,27 @@ export default function SettingsScreen() {
             urlCopied={urlCopied}
             activeRelayId={relayDeviceId}
           />
+          <Pressable
+            style={({ pressed }) => [styles.viewSketchBtn, pressed && { opacity: 0.75 }]}
+            onPress={() => { haptic(); setSketchModalVisible(true); }}
+          >
+            <Ionicons name="code-slash" size={15} color={Colors.dark.tint} />
+            <Text style={styles.viewSketchBtnText}>{t("viewFullSketch")}</Text>
+            <Ionicons name="chevron-forward" size={14} color={Colors.dark.textMuted} />
+          </Pressable>
+        </View>
+
+        <View style={styles.section}>
+          <SectionTitle label={t("cloudDevices")} />
+          <CloudDevicesSection
+            onConnect={async (id) => {
+              haptic();
+              if (demoMode) await setDemoMode(false);
+              setRelayIdInput(id);
+              connectToRelay(id);
+            }}
+            activeRelayId={relayDeviceId}
+          />
         </View>
 
         <View style={styles.section}>
@@ -994,6 +1233,12 @@ export default function SettingsScreen() {
         onClose={() => setScanModalVisible(false)}
         onSelectWifi={handleScanSelectWifi}
         onSelectBLE={handleScanSelectBLE}
+      />
+
+      <ESP32SketchModal
+        visible={sketchModalVisible}
+        onClose={() => setSketchModalVisible(false)}
+        pushUrl={relayPushUrl}
       />
     </>
   );
@@ -1518,5 +1763,190 @@ const styles = StyleSheet.create({
     color: "#000",
     fontSize: 14,
     fontWeight: "700" as const,
+  },
+
+  viewSketchBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginTop: 10,
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: Colors.dark.tint + "30",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  viewSketchBtnText: {
+    flex: 1,
+    color: Colors.dark.tint,
+    fontSize: 14,
+    fontWeight: "600" as const,
+  },
+
+  cloudSection: {
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.dark.tint + "25",
+    overflow: "hidden",
+  },
+  cloudHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.dark.border + "60",
+  },
+  cloudHeaderLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  cloudHeaderIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: Colors.dark.tint + "18",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cloudTitle: {
+    color: Colors.dark.text,
+    fontSize: 14,
+    fontWeight: "700" as const,
+  },
+  cloudSubtitle: {
+    color: Colors.dark.textMuted,
+    fontSize: 11,
+    fontWeight: "400" as const,
+    marginTop: 1,
+  },
+  cloudRefreshBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: Colors.dark.tint + "15",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cloudLoadingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 16,
+  },
+  cloudLoadingText: {
+    color: Colors.dark.textSecondary,
+    fontSize: 13,
+  },
+  cloudEmptyRow: {
+    alignItems: "center",
+    gap: 8,
+    paddingVertical: 24,
+    paddingHorizontal: 16,
+  },
+  cloudEmptyText: {
+    color: Colors.dark.textMuted,
+    fontSize: 13,
+    textAlign: "center",
+  },
+  cloudDeviceList: { },
+  cloudDeviceRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: Colors.dark.border + "50",
+  },
+  cloudDeviceRowActive: {
+    backgroundColor: Colors.dark.tint + "08",
+  },
+  cloudDeviceIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 9,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  cloudDeviceName: {
+    color: Colors.dark.text,
+    fontSize: 14,
+    fontWeight: "600" as const,
+  },
+  cloudDeviceMeta: {
+    color: Colors.dark.textMuted,
+    fontSize: 11,
+    marginTop: 2,
+  },
+  cloudActiveChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: Colors.dark.tint + "18",
+    borderRadius: 8,
+  },
+  cloudActiveChipText: {
+    color: Colors.dark.tint,
+    fontSize: 11,
+    fontWeight: "600" as const,
+  },
+  cloudConnectChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: Colors.dark.accent + "18",
+    borderRadius: 8,
+  },
+  cloudConnectChipText: {
+    color: Colors.dark.accent,
+    fontSize: 11,
+    fontWeight: "600" as const,
+  },
+
+  sketchModalTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  sketchInfoBox: {
+    flexDirection: "row",
+    gap: 10,
+    backgroundColor: Colors.dark.accent + "12",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.dark.border,
+    alignItems: "flex-start",
+  },
+  sketchInfoText: {
+    color: Colors.dark.textSecondary,
+    fontSize: 12,
+    lineHeight: 18,
+    flex: 1,
+  },
+  sketchScrollContent: {
+    padding: 16,
+  },
+  sketchCodeBox: {
+    backgroundColor: Colors.dark.background,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.dark.border,
+  },
+  sketchCodeText: {
+    color: Colors.dark.textSecondary,
+    fontSize: 11,
+    lineHeight: 17,
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
 });

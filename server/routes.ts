@@ -111,58 +111,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   });
 
-  // ── History (Supabase) ────────────────────────────────────────────────────
+  // ── History (Supabase with optional hours filter) ─────────────────────────
   app.get("/api/bms/history", async (req: Request, res: Response) => {
     setRelayHeaders(res);
     const deviceId = (req.query.device_id as string) || "default";
-    const limit = Math.min(
-      parseInt((req.query.limit as string) || "100", 10),
-      500
-    );
+    const limit = Math.min(parseInt((req.query.limit as string) || "500", 10), 500);
+    const hours = parseFloat((req.query.hours as string) || "24");
+    const sinceMs = hours > 0 ? Date.now() - hours * 60 * 60 * 1000 : undefined;
 
-    // Try Supabase first for persistent data
-    const rows = await getHistory(deviceId, limit);
+    const rows = await getHistory(deviceId, limit, sinceMs);
     if (rows.length > 0) {
       return res.json({
         deviceId,
         count: rows.length,
         source: "supabase",
+        hours,
         entries: rows.map((r) => ({
           timestamp: new Date(r.received_at).getTime(),
-          voltage: r.voltage,
-          current: r.current,
-          soc: r.soc,
-          temp1: r.temp1,
+          voltage: r.voltage ?? 0,
+          current: r.current ?? 0,
+          soc: r.soc ?? 0,
+          temp1: r.temp1 ?? 0,
+          temp2: r.temp2 ?? 0,
         })),
       });
     }
 
     // Fallback to in-memory
     const hist = deviceHistory.get(deviceId) ?? [];
-    const entries = hist.slice(-limit);
-    return res.json({ deviceId, count: entries.length, source: "memory", entries });
+    const cutoff = sinceMs ?? 0;
+    const entries = hist.filter((e) => e.timestamp >= cutoff).slice(-limit);
+    return res.json({
+      deviceId,
+      count: entries.length,
+      source: "memory",
+      hours,
+      entries: entries.map((e) => ({
+        timestamp: e.timestamp,
+        voltage: (e.data.voltage as number) ?? 0,
+        current: (e.data.current as number) ?? 0,
+        soc: (e.data.soc as number) ?? 0,
+        temp1: (e.data.temp1 as number) ?? 0,
+        temp2: (e.data.temp2 as number) ?? 0,
+      })),
+    });
   });
 
-  // ── Device list ───────────────────────────────────────────────────────────
+  // ── Device list (Supabase + in-memory merged) ─────────────────────────────
   app.get("/api/bms/devices", async (_req: Request, res: Response) => {
     setRelayHeaders(res);
-    // Merge in-memory + Supabase device list
     const supabaseDevices = await getDeviceList();
     const memDevices = Array.from(deviceStore.values()).map((r) => ({
       device_id: r.deviceId,
       last_seen: new Date(r.receivedAt).toISOString(),
+      count: 0,
       ageMs: Date.now() - r.receivedAt,
     }));
 
-    const merged = new Map<string, object>();
+    const merged = new Map<string, { device_id: string; last_seen: string; count: number; ageMs: number }>();
     for (const d of supabaseDevices) {
-      merged.set(d.device_id, { ...d, ageMs: Date.now() - new Date(d.last_seen).getTime() });
+      merged.set(d.device_id, {
+        ...d,
+        ageMs: Date.now() - new Date(d.last_seen).getTime(),
+      });
     }
     for (const d of memDevices) {
-      merged.set(d.device_id, { ...merged.get(d.device_id), ...d });
+      const existing = merged.get(d.device_id);
+      if (existing) {
+        merged.set(d.device_id, { ...existing, ageMs: d.ageMs, last_seen: d.last_seen });
+      } else {
+        merged.set(d.device_id, d);
+      }
     }
 
-    res.json(Array.from(merged.values()));
+    res.json(Array.from(merged.values()).sort((a, b) => a.ageMs - b.ageMs));
   });
 
   // ── Supabase health check ─────────────────────────────────────────────────

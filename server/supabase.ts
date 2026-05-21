@@ -27,37 +27,6 @@ export interface BmsReading {
   discharge_mos?: boolean | null;
 }
 
-export async function ensureSchema(): Promise<void> {
-  const { error } = await supabase.rpc("exec_ddl", {
-    sql: `
-      CREATE TABLE IF NOT EXISTS bms_readings (
-        id            BIGSERIAL PRIMARY KEY,
-        device_id     TEXT NOT NULL,
-        received_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        voltage       NUMERIC,
-        current       NUMERIC,
-        soc           NUMERIC,
-        remaining_cap NUMERIC,
-        full_cap      NUMERIC,
-        cycles        INTEGER,
-        temp1         NUMERIC,
-        temp2         NUMERIC,
-        cells         JSONB,
-        protection    INTEGER,
-        charge_mos    BOOLEAN,
-        discharge_mos BOOLEAN
-      );
-      CREATE INDEX IF NOT EXISTS bms_readings_device_time
-        ON bms_readings (device_id, received_at DESC);
-    `,
-  });
-
-  if (error) {
-    // RPC not available — try direct query fallback
-    await supabase.from("bms_readings").select("id").limit(1);
-  }
-}
-
 export async function insertReading(
   deviceId: string,
   data: Record<string, unknown>
@@ -82,6 +51,7 @@ export async function insertReading(
   const { error } = await supabase.from("bms_readings").insert(row);
   if (error) {
     console.warn("[supabase] insert error:", error.message);
+    throw new Error(error.message);
   }
 }
 
@@ -105,14 +75,21 @@ export async function getLatestReading(
 
 export async function getHistory(
   deviceId: string,
-  limit = 100
+  limit = 100,
+  sinceMs?: number
 ): Promise<BmsReading[]> {
-  const { data, error } = await supabase
+  let query = supabase
     .from("bms_readings")
-    .select("id,device_id,received_at,voltage,current,soc,temp1")
+    .select("id,device_id,received_at,voltage,current,soc,temp1,temp2")
     .eq("device_id", deviceId)
     .order("received_at", { ascending: false })
     .limit(Math.min(limit, 500));
+
+  if (sinceMs) {
+    query = query.gte("received_at", new Date(sinceMs).toISOString());
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.warn("[supabase] getHistory error:", error.message);
@@ -128,7 +105,7 @@ export async function getDeviceList(): Promise<
     .from("bms_readings")
     .select("device_id, received_at")
     .order("received_at", { ascending: false })
-    .limit(1000);
+    .limit(2000);
 
   if (error) {
     console.warn("[supabase] getDeviceList error:", error.message);
