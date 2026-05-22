@@ -15,6 +15,7 @@ import Colors from "@/constants/colors";
 
 const VERSION = "1.0.0";
 const GITHUB_URL = "https://github.com/Drovosek82/Replit-bms";
+const PLATFORMIO_URL = "https://github.com/Drovosek82/Replit-bms/tree/main/attached_assets";
 
 interface FeatureRowProps {
   icon: keyof typeof Ionicons.glyphMap;
@@ -178,20 +179,54 @@ export default function AboutScreen() {
         ))}
       </View>
 
-      {/* Supported hardware */}
+      {/* ESP32 hardware */}
       <Text style={styles.sectionTitle}>
-        {uk ? "Підтримуване залізо" : "Supported Hardware"}
+        {uk ? "Апаратне забезпечення" : "Hardware"}
       </Text>
       <View style={styles.card}>
         {[
-          { label: "BMS", value: "JBD / Jiabaida (будь-яка модель)" },
-          { label: "MCU", value: "ESP32 (будь-яка плата)" },
-          { label: "Хімія", value: "LiFePO₄, Li-Ion, LiPo" },
-          { label: "Комірки", value: "до 32 послідовних" },
+          { label: uk ? "Мікроконтролер" : "MCU",       value: "ESP32-C3 Super Mini" },
+          { label: uk ? "Дисплей" : "Display",           value: "GMT020-02 ST7789 240×320" },
+          { label: "BMS",                                 value: "JBD / Jiabaida (BLE)" },
+          { label: uk ? "Хімія" : "Chemistry",           value: "LiFePO₄ · Li-Ion · LiPo" },
+          { label: uk ? "Комірки" : "Cells",             value: uk ? "до 24 послідовних" : "up to 24S" },
         ].map((r) => (
           <View key={r.label} style={styles.hwRow}>
             <Text style={styles.hwLabel}>{r.label}</Text>
             <Text style={styles.hwValue}>{r.value}</Text>
+          </View>
+        ))}
+      </View>
+
+      {/* PlatformIO project */}
+      <Text style={styles.sectionTitle}>
+        {uk ? "Прошивка для ESP32" : "ESP32 Firmware"}
+      </Text>
+      <View style={styles.card}>
+        <View style={styles.featureRow}>
+          <View style={[styles.featureIcon, { backgroundColor: Colors.dark.accent + "18" }]}>
+            <Ionicons name="hardware-chip" size={20} color={Colors.dark.accent} />
+          </View>
+          <View style={styles.featureText}>
+            <Text style={styles.featureTitle}>BMS_PlatformIO</Text>
+            <Text style={styles.featureDesc}>
+              {uk
+                ? "PlatformIO проєкт для ESP32-C3 Super Mini. Підключається до JBD BMS через BLE, показує дані на дисплеї ST7789 та надсилає на сервер кожні 5 секунд."
+                : "PlatformIO project for ESP32-C3 Super Mini. Connects to JBD BMS via BLE, shows data on ST7789 display and pushes to server every 5 seconds."}
+            </Text>
+          </View>
+        </View>
+        <View style={styles.divider} />
+        {[
+          { icon: "bluetooth" as const,      label: uk ? "BLE підключення до JBD BMS" : "BLE connection to JBD BMS" },
+          { icon: "tv-outline" as const,     label: uk ? "Дисплей 240×320 з анімацією" : "240×320 display with animations" },
+          { icon: "cloud-upload" as const,   label: uk ? "HTTP POST на сервер кожні 5с" : "HTTP POST to server every 5s" },
+          { icon: "wifi" as const,           label: uk ? "WiFi AP для налаштування" : "WiFi AP for configuration" },
+          { icon: "scan-outline" as const,   label: uk ? "Сканування BLE пристроїв" : "BLE device scanning" },
+        ].map((item) => (
+          <View key={item.label} style={styles.checkRow}>
+            <Ionicons name={item.icon} size={14} color={Colors.dark.accent} />
+            <Text style={styles.checkText}>{item.label}</Text>
           </View>
         ))}
       </View>
@@ -374,6 +409,16 @@ const styles = StyleSheet.create({
     fontWeight: "600" as const,
   },
 
+  checkRow: {
+    flexDirection: "row" as const,
+    alignItems: "center",
+    gap: 8,
+  },
+  checkText: {
+    color: Colors.dark.textSecondary,
+    fontSize: 13,
+    flex: 1,
+  },
   footer: {
     textAlign: "center",
     color: Colors.dark.textMuted,

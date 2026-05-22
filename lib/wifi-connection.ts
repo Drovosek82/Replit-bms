@@ -6,52 +6,85 @@ const FETCH_TIMEOUT_MS = 5000;
 const ENDPOINTS = ["/data", "/api/data", "/bms", "/api/bms", "/status"];
 
 interface ESP32Raw {
+  // Voltage
   voltage?: number;
   totalVoltage?: number;
   total_voltage?: number;
   pack_voltage?: number;
 
+  // Current
   current?: number;
   pack_current?: number;
 
+  // Remaining capacity — PlatformIO sends "capacity"
   remaining_cap?: number;
   remainingCap?: number;
   remain_cap?: number;
   remaining_capacity?: number;
+  capacity?: number;           // PlatformIO api_client.h
 
+  // Full capacity — PlatformIO sends "total_capacity" (API) or "totalCapacity" (web)
   full_cap?: number;
   fullCap?: number;
   design_cap?: number;
   full_capacity?: number;
+  total_capacity?: number;     // PlatformIO api_client.h (snake_case)
+  totalCapacity?: number;      // PlatformIO web_server.h  (camelCase)
 
+  // SOC
   soc?: number;
   rsoc?: number;
   capacity_percent?: number;
 
+  // Cycles — PlatformIO sends "cycle_count"
   cycles?: number;
   cycle_cnt?: number;
-  cycle_count?: number;
+  cycle_count?: number;        // PlatformIO
+  cycleCount?: number;         // PlatformIO web
 
+  // Temperatures
   temp1?: number;
   temp2?: number;
   temperature1?: number;
   temperature2?: number;
-  temperatures?: number[];
+  temperatures?: number[];     // PlatformIO (array)
 
+  // Cells — PlatformIO sends "cell_voltages" (API) or "cellVoltages" (web)
   cells?: (number | { voltage: number })[];
-  cell_voltages?: number[];
-  cellVoltages?: number[];
+  cell_voltages?: number[];    // PlatformIO API
+  cellVoltages?: number[];     // PlatformIO web
 
+  // Cell count
+  cell_count?: number;         // PlatformIO API
+  cellCount?: number;          // PlatformIO web
+
+  // Protection — PlatformIO sends "protection_status"
   protection?: number | Record<string, boolean>;
-  protection_status?: number;
+  protection_status?: number;  // PlatformIO API
+  protectionStatus?: number;   // PlatformIO web
   protect_status?: number;
 
+  // FET — PlatformIO sends "fet_status" bitmask (bit0=CHG, bit1=DSG)
   charge_mos?: boolean;
   discharge_mos?: boolean;
   chargeMos?: boolean;
   dischargeMos?: boolean;
   charge_fet?: boolean;
   discharge_fet?: boolean;
+  fet_status?: number;         // PlatformIO API bitmask
+  fetStatus?: number;          // PlatformIO web bitmask
+
+  // Balance — PlatformIO extras
+  balance_status?: number;
+  balanceStatus?: number;
+  balance_status_high?: number;
+  balanceStatusHigh?: number;
+
+  // WiFi info
+  rssi?: number;
+  wifi_ip?: string;
+  wifiConnected?: boolean;
+  bmsConnected?: boolean;
 }
 
 function parseProtectionBits(
@@ -66,16 +99,18 @@ function parseProtectionBits(
     bits = raw.protection_status;
   else if (typeof raw.protect_status === "number") bits = raw.protect_status;
 
+  // PlatformIO sends fet_status/fetStatus bitmask: bit0=CHG, bit1=DSG
+  const fetBits = raw.fet_status ?? raw.fetStatus ?? null;
   const chargeMos =
     raw.charge_mos ??
     raw.chargeMos ??
     raw.charge_fet ??
-    (bits === 0 ? true : !(bits & 0x40));
+    (fetBits !== null ? !!(fetBits & 0x01) : bits === 0 ? true : !(bits & 0x40));
   const dischargeMos =
     raw.discharge_mos ??
     raw.dischargeMos ??
     raw.discharge_fet ??
-    (bits === 0 ? true : !(bits & 0x80));
+    (fetBits !== null ? !!(fetBits & 0x02) : bits === 0 ? true : !(bits & 0x80));
 
   return {
     overVoltage: !!(bits & 0x01),
@@ -121,6 +156,8 @@ export function parseESP32Response(raw: ESP32Raw): BMSData {
     raw.fullCap ??
     raw.design_cap ??
     raw.full_capacity ??
+    raw.total_capacity ??   // PlatformIO API
+    raw.totalCapacity ??    // PlatformIO web
     30;
 
   const soc =
@@ -131,6 +168,7 @@ export function parseESP32Response(raw: ESP32Raw): BMSData {
     raw.remainingCap ??
     raw.remain_cap ??
     raw.remaining_capacity ??
+    raw.capacity ??         // PlatformIO API
     parseFloat(((fullCapacity * soc) / 100).toFixed(1));
 
   const temps = raw.temperatures ?? [];
@@ -145,7 +183,7 @@ export function parseESP32Response(raw: ESP32Raw): BMSData {
     remainingCapacity: parseFloat(remainingCapacity.toFixed(1)),
     fullCapacity: parseFloat(fullCapacity.toFixed(0)),
     soc: parseFloat(soc.toFixed(1)),
-    cycles: raw.cycles ?? raw.cycle_cnt ?? raw.cycle_count ?? 0,
+    cycles: raw.cycles ?? raw.cycle_cnt ?? raw.cycle_count ?? raw.cycleCount ?? 0,
     temperature1: parseFloat(temp1.toFixed(1)),
     temperature2: parseFloat(temp2.toFixed(1)),
     cells,
