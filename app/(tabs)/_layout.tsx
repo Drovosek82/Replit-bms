@@ -27,6 +27,10 @@ function NativeTabLayout() {
         <Icon sf={{ default: "gearshape", selected: "gearshape.fill" }} md="settings" />
         <Label>Settings</Label>
       </NativeTabs.Trigger>
+      <NativeTabs.Trigger name="about">
+        <Icon sf={{ default: "info.circle", selected: "info.circle.fill" }} md="info" />
+        <Label>About</Label>
+      </NativeTabs.Trigger>
     </NativeTabs>
   );
 }
@@ -100,6 +104,15 @@ function ClassicTabLayout() {
           title: "Settings",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="settings" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="about"
+        options={{
+          title: "About",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="information-circle" size={size} color={color} />
           ),
         }}
       />
